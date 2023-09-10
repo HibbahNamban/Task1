@@ -1,0 +1,94 @@
+# Load the required library for handling gzipped files
+library(data.table)
+
+# Define a custom function to read the non-standard gene_info file
+read_custom_gene_info <- function(file) {
+  lines <- readLines(file)
+  header_line <- grep("^#tax_id", lines)
+  header <- unlist(strsplit(lines[header_line], "\t"))
+  data_lines <- lines[-(1:header_line)]
+  data_list <- lapply(strsplit(data_lines, "\t"), as.character)
+  data_frame <- as.data.frame(do.call(rbind, data_list), stringsAsFactors = FALSE)
+  colnames(data_frame) <- header
+  return(data_frame)
+}
+
+# Step 1: Read the gene_info file and create a mapping of symbols to Entrez IDs
+gene_info_file <- "Homo_sapiens.gene_info.gz"
+gene_info_data <- read_custom_gene_info(gene_info_file)
+
+# Convert GeneID and Symbol columns to character
+gene_info_data$GeneID <- as.character(gene_info_data$GeneID)
+gene_info_data$Symbol <- as.character(gene_info_data$Symbol)
+
+# Create an empty mapping of symbols to Entrez IDs
+symbol_to_entrez_map <- data.frame(GeneID = character(0), Symbol = character(0), stringsAsFactors = FALSE)
+
+# Create an empty list to store synonym data
+synonyms_list <- list()
+
+# Process the gene_info_data row by row
+for (i in 1:nrow(gene_info_data)) {
+  gene_id <- gene_info_data$GeneID[i]
+  symbols <- unlist(strsplit(gene_info_data$Symbol[i], "\\|"))
+  synonyms <- unlist(strsplit(gene_info_data$Synonyms[i], "\\|"))
+  
+  # Create a data frame with symbols and their corresponding GeneIDs
+  symbol_data <- data.frame(GeneID = rep(gene_id, length(symbols) + length(synonyms)),
+                            Symbol = c(symbols, synonyms),
+                            stringsAsFactors = FALSE)
+  
+  # Append the symbol_data to the symbol_to_entrez_map
+  symbol_to_entrez_map <- rbind(symbol_to_entrez_map, symbol_data)
+  
+  # Add synonyms to the list
+  synonyms_list <- c(synonyms_list, list(synonyms)) # Store each set of synonyms as a list element
+}
+
+# Remove duplicates from the mapping
+symbol_to_entrez_map <- symbol_to_entrez_map[!duplicated(symbol_to_entrez_map), ]
+
+# Create a data frame for synonyms with consistent rows
+synonyms_data <- data.frame(GeneID = rep(gene_info_data$GeneID, sapply(synonyms_list, length)),
+                            Symbol = unlist(synonyms_list),
+                            stringsAsFactors = FALSE)
+
+# Step 2: Read the GMT file, replace symbols with Entrez IDs, and write the updated GMT file
+gmt_file <- "h.all.v2023.1.Hs.symbols.gmt"
+output_file <- "updated_gmt_file.gmt"
+
+# Open the input and output files
+input_connection <- file(gmt_file, "r")
+output_connection <- file(output_file, "w")
+
+# Process the GMT file line by line
+while (TRUE) {
+  line <- readLines(input_connection, n = 1)
+  if (length(line) == 0) {
+    break  # End of file
+  }
+  
+  # Split the line into fields by tabs
+  fields <- unlist(strsplit(line, "\t"))
+  
+  # Extract pathway name and description (first two fields)
+  pathway_name <- fields[1]
+  pathway_description <- fields[2]
+  
+  # Replace symbols with corresponding Entrez IDs
+  pathway_genes <- fields[-c(1, 2)]
+  entrez_ids <- symbol_to_entrez_map$GeneID[match(pathway_genes, symbol_to_entrez_map$Symbol)]
+  
+  # Create a new line with Entrez IDs
+  new_line <- paste(pathway_name, pathway_description, paste(entrez_ids, collapse = "\t"), sep = "\t")
+  
+  # Write the new line to the output file
+  cat(new_line, file = output_connection, sep = "\n")
+}
+
+# Close the input and output files
+close(input_connection)
+close(output_connection)
+
+# Print a message indicating completion
+cat("GMT file with Entrez IDs has been created:", output_file, "\n")
